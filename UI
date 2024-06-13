@@ -1,0 +1,358 @@
+import pandas as pd
+import logging
+from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QScrollBar, QPushButton, QLabel, QTableWidget, QTableWidgetItem, QComboBox, QTextEdit, QApplication, QDialog, QLineEdit, QFileDialog, QCheckBox, QRadioButton, QMessageBox
+from DataLoaderModule import DataLoader
+from CleaningModule import process_and_load_data
+from AnalysisModule import analyze_real_estate_data
+import sys
+from datetime import datetime
+
+logging.basicConfig(level=logging.INFO, filename='real_estate_analysis.log', filemode='w',
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+
+class RealEstateAnalysisApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Real Estate Analysis")
+        self.resize(800, 600)
+        self.initUI()
+
+    def initUI(self):
+        initial_dialog = InitialChoiceDialog(self)
+        if initial_dialog.exec_() == QDialog.Accepted:
+            self.choice, self.db_path, self.csv_path = initial_dialog.get_choice()
+
+            if self.choice == 'create':
+                self.DataLoaderModule = DataLoader(f'{self.db_path}.db')
+                self.DataLoaderModule.create_database()
+                if self.csv_path:
+                    process_and_load_data([self.csv_path], self.DataLoaderModule.db_file)
+            elif self.choice == 'add':
+                self.DataLoaderModule = DataLoader(self.db_path)
+                if self.csv_path:
+                    process_and_load_data([self.csv_path], self.DataLoaderModule.db_file, create_new_db=False)
+            elif self.choice == 'use':
+                self.DataLoaderModule = DataLoader(self.db_path)
+
+            self.central_widget = QWidget()
+            self.setCentralWidget(self.central_widget)
+            layout = QVBoxLayout()
+
+            self.db_label = QLabel(f"Database: {self.db_path}")
+            layout.addWidget(self.db_label)
+
+            self.timeframe_label = QLabel("Select Timeframe")
+            layout.addWidget(self.timeframe_label)
+            self.timeframe_combobox = QComboBox()
+            self.timeframe_combobox.addItems(["Monthly", "Quarterly", "Annual"])
+            self.timeframe_combobox.currentIndexChanged.connect(self.populate_dates_based_on_timeframe)
+            layout.addWidget(self.timeframe_combobox)
+
+            self.start_date_label = QLabel("Select Start Date")
+            layout.addWidget(self.start_date_label)
+            self.start_date_combobox = QComboBox()
+            self.start_date_combobox.setMaxVisibleItems(10)  # Set max visible items to 10
+            layout.addWidget(self.start_date_combobox)
+
+            self.end_date_label = QLabel("Select End Date")
+            layout.addWidget(self.end_date_label)
+            self.end_date_combobox = QComboBox()
+            self.end_date_combobox.setMaxVisibleItems(10)  # Set max visible items to 10
+            layout.addWidget(self.end_date_combobox)
+
+            self.city_label = QLabel("Select City")
+            layout.addWidget(self.city_label)
+            self.city_combobox = QComboBox()
+            self.city_combobox.addItem("All")
+            layout.addWidget(self.city_combobox)
+
+            self.subdivision_label = QLabel("Select Subdivision")
+            layout.addWidget(self.subdivision_label)
+            self.subdivision_combobox = QComboBox()
+            self.subdivision_combobox.addItem("All")
+            layout.addWidget(self.subdivision_combobox)
+
+            self.type_label = QLabel("Select Building Type")
+            layout.addWidget(self.type_label)
+            self.type_combobox = QComboBox()
+            self.type_combobox.addItem("All")
+            layout.addWidget(self.type_combobox)
+
+            self.statistics_label = QLabel("Select Statistics to Calculate")
+            layout.addWidget(self.statistics_label)
+
+            self.stats_checkboxes = {
+                'new_listings': QCheckBox("New Listings"),
+                'closed_listings': QCheckBox("Closed Listings"),
+                'avg_sold_price_per_foot': QCheckBox("Average Sold Price per Foot"),
+                'avg_days_on_market': QCheckBox("Average Days on Market"),
+                'total_dollar_volume': QCheckBox("Total Dollar Volume"),
+                'pending_listings': QCheckBox("Pending Listings"),
+                'list_price_to_sold_price_ratio': QCheckBox("List Price to Sold Price Ratio"),
+                'active_inventory': QCheckBox("Active Inventory"),
+                'msi': QCheckBox("Month Supply of Inventory"),
+                'percent_cash_sales': QCheckBox("Percent Cash Sales"),
+                'avg_sold_price': QCheckBox("Average Sold Price"),
+                'median_sold_price': QCheckBox("Median Sold Price")
+            }
+            for checkbox in self.stats_checkboxes.values():
+                layout.addWidget(checkbox)
+
+            self.run_analysis_button = QPushButton('Run Analysis')
+            self.run_analysis_button.clicked.connect(self.run_analysis)
+            layout.addWidget(self.run_analysis_button)
+
+            self.results_table = QTableWidget(self)
+            layout.addWidget(self.results_table)
+
+            self.central_widget.setLayout(layout)
+            self.populate_dates_based_on_timeframe()  # Populate dates on initialization
+
+
+    def populate_dates_based_on_timeframe(self):
+        selected_timeframe = self.timeframe_combobox.currentText()
+
+        min_date, max_date = self.DataLoaderModule.get_date_range()
+
+        if selected_timeframe == "Monthly":
+            date_range = pd.date_range(min_date, max_date, freq='MS')
+        elif selected_timeframe == "Quarterly":
+            date_range = pd.date_range(min_date, max_date, freq='QS')
+        elif selected_timeframe == "Annual":
+            date_range = pd.date_range(min_date, max_date, freq='YS')
+
+        formatted_dates = date_range.strftime('%b %Y').tolist()
+
+        # Set the maximum visible items in the drop-down menu based on the length of formatted_dates
+        max_visible_items = min(len(formatted_dates), 10)  # Adjust the number of items as needed
+        self.start_date_combobox.setMaxVisibleItems(max_visible_items)
+        self.end_date_combobox.setMaxVisibleItems(max_visible_items)
+
+        self.start_date_combobox.clear()
+        self.start_date_combobox.addItems(formatted_dates)
+
+        self.end_date_combobox.clear()
+        self.end_date_combobox.addItems(formatted_dates)
+
+        # Add a scroll bar to the drop-down menu
+        scroll_bar = QScrollBar(self.start_date_combobox)
+        self.start_date_combobox.setVerticalScrollBar(scroll_bar)
+        scroll_bar = QScrollBar(self.end_date_combobox)
+        self.end_date_combobox.setVerticalScrollBar(scroll_bar)
+
+
+    def run_analysis(self):
+        try:
+            params = self.collect_parameters()
+            df = self.DataLoaderModule.fetch_filtered_data(params)
+
+            if df.empty:
+                logging.warning("No data available for the selected parameters.")
+                self.display_results(pd.DataFrame(columns=['No results to display']))
+                return
+
+            results = analyze_real_estate_data(df, params)
+
+            if results.empty:
+                logging.warning("Analysis did not produce any results.")
+                self.display_results(pd.DataFrame(columns=['No results to display']))
+                return
+
+            formatted_results = self.format_results_as_grid(results)
+            self.display_results(formatted_results)
+            self.DataLoaderModule.export_analysis_results_to_csv(results, 'analysis_results.csv')
+        except Exception as e:
+            logging.error(f"Error during analysis: {str(e)}")
+            self.display_results(pd.DataFrame(columns=['Error during analysis']))
+
+    def collect_parameters(self):
+        params = {
+            'timeframe': self.timeframe_combobox.currentText().lower(),
+            'start_date': self.start_date_combobox.currentText(),
+            'end_date': self.end_date_combobox.currentText(),
+            'city': self.city_combobox.currentText(),
+            'subdivision': self.subdivision_combobox.currentText(),
+            'building_type': self.type_combobox.currentText(),
+            'stats_to_calculate': [key for key, checkbox in self.stats_checkboxes.items() if checkbox.isChecked()]
+        }
+        return params
+
+    def display_results(self, results):
+        try:
+            logging.info(f"Type of results: {type(results)}")
+            if isinstance(results, pd.DataFrame):
+                logging.info(f"Contents of results:\n{results.head()}")
+                self.show_results_window(results)
+            elif isinstance(results, pd.io.formats.style.Styler):
+                logging.info("Results are a Styler object")
+                self.show_results_window(results.data)
+            else:
+                logging.info("Results are not a DataFrame")
+                self.show_results_window(pd.DataFrame(columns=['No results to display']))
+        except Exception as e:
+            logging.error(f"Error displaying results: {e}")
+            self.results_table.setRowCount(1)
+            self.results_table.setColumnCount(1)
+            self.results_table.setItem(0, 0, QTableWidgetItem("Error displaying results"))
+
+    def show_results_window(self, results):
+        results_window = ResultsWindow(results)
+        results_window.exec_()
+
+    def format_results_as_grid(self, results):
+        if results.empty:
+            return pd.DataFrame(columns=['No results to display'])
+        else:
+            styled_results = results.style.set_table_styles([
+                {'selector': 'thead th', 'props': [('background-color', '#f4f4f4'), ('color', '#333')]},
+                {'selector': 'tbody td', 'props': [('padding', '5px'), ('text-align', 'center')]}
+            ])
+            return styled_results
+
+    def create_new_database(self):
+        options = QFileDialog.Options()
+        db_file, _ = QFileDialog.getSaveFileName(self, "Create New Database", "", "SQLite Files (.db);;All Files ()", options=options)
+        if db_file:
+            self.DataLoaderModule = DataLoader(db_file)
+            self.DataLoaderModule.create_database()
+            QMessageBox.information(self, "Success", "New database created successfully.")
+            self.populate_dropdowns_and_date_range()
+
+    def add_data_to_database(self):
+        options = QFileDialog.Options()
+        file_paths, _ = QFileDialog.getOpenFileNames(self, "Select Data Files", "", "CSV Files (*.csv);;All Files (*)", options=options)
+        if file_paths:
+            process_and_load_data(file_paths, self.DataLoaderModule.db_file, create_new_db=False)
+            QMessageBox.information(self, "Success", "Data added to database successfully.")
+            self.populate_dropdowns_and_date_range()
+
+    def update_database(self):
+        options = QFileDialog.Options()
+        file_paths, _ = QFileDialog.getOpenFileNames(self, "Select Data Files", "", "CSV Files (*.csv);;All Files (*)", options=options)
+        if file_paths:
+            process_and_load_data(file_paths, self.DataLoaderModule.db_file, create_new_db=False)
+            QMessageBox.information(self, "Success", "Database updated successfully.")
+            self.populate_dropdowns_and_date_range()
+
+class ResultsWindow(QDialog):
+    def __init__(self, results):
+        super().__init__()
+        self.setWindowTitle("Analysis Results")
+        self.resize(800, 600)
+        layout = QVBoxLayout()
+        self.results_text = QTextEdit()
+        layout.addWidget(self.results_text)
+        self.setLayout(layout)
+        self.display_results(results)
+
+    def display_results(self, results):
+        try:
+            if isinstance(results, pd.DataFrame):
+                results_str = results.to_string(index=False)
+                self.results_text.setText(results_str)
+            elif isinstance(results, pd.io.formats.style.Styler):
+                results_str = results.data.to_string(index=False)
+                self.results_text.setText(results_str)
+            else:
+                self.results_text.setText("No results to display")
+        except Exception as e:
+            logging.error(f"Error displaying results in ResultsWindow: {e}")
+            self.results_text.setText("Error displaying results")
+
+class InitialChoiceDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Select an Option')
+        self.layout = QVBoxLayout(self)
+
+        self.create_db_radio = QRadioButton("Create New Database")
+        self.add_data_radio = QRadioButton("Add Data to Existing Database")
+        self.use_db_radio = QRadioButton("Use Existing Database")
+        self.use_db_radio.setChecked(True)
+
+        self.create_db_radio.toggled.connect(self.toggle_input_fields)
+        self.add_data_radio.toggled.connect(self.toggle_input_fields)
+        self.use_db_radio.toggled.connect(self.toggle_input_fields)
+
+        self.layout.addWidget(self.create_db_radio)
+        self.layout.addWidget(self.add_data_radio)
+        self.layout.addWidget(self.use_db_radio)
+
+        self.db_name_label = QLabel("Database Name:")
+        self.db_name_edit = QLineEdit()
+        self.layout.addWidget(self.db_name_label)
+        self.layout.addWidget(self.db_name_edit)
+
+        self.db_path_label = QLabel("Database Path:")
+        self.db_path_edit = QLineEdit()
+        self.select_db_button = QPushButton("Select Database")
+        self.select_db_button.clicked.connect(self.select_database)
+        self.layout.addWidget(self.db_path_label)
+        self.layout.addWidget(self.db_path_edit)
+        self.layout.addWidget(self.select_db_button)
+
+        self.csv_label = QLabel("Select CSV File (Optional):")
+        self.csv_edit = QLineEdit()
+        self.select_csv_button = QPushButton("Select CSV")
+        self.select_csv_button.clicked.connect(self.select_csv)
+        self.layout.addWidget(self.csv_label)
+        self.layout.addWidget(self.csv_edit)
+        self.layout.addWidget(self.select_csv_button)
+
+        self.toggle_input_fields()
+
+    def toggle_input_fields(self):
+        if self.create_db_radio.isChecked():
+            self.db_name_label.setEnabled(True)
+            self.db_name_edit.setEnabled(True)
+            self.db_path_label.setEnabled(False)
+            self.db_path_edit.setEnabled(False)
+            self.select_db_button.setEnabled(False)
+            self.csv_label.setEnabled(True)
+            self.csv_edit.setEnabled(True)
+            self.select_csv_button.setEnabled(True)
+        elif self.add_data_radio.isChecked():
+            self.db_name_label.setEnabled(False)
+            self.db_name_edit.setEnabled(False)
+            self.db_path_label.setEnabled(True)
+            self.db_path_edit.setEnabled(True)
+            self.select_db_button.setEnabled(True)
+            self.csv_label.setEnabled(True)
+            self.csv_edit.setEnabled(True)
+            self.select_csv_button.setEnabled(True)
+        elif self.use_db_radio.isChecked():
+            self.db_name_label.setEnabled(False)
+            self.db_name_edit.setEnabled(False)
+            self.db_path_label.setEnabled(True)
+            self.db_path_edit.setEnabled(True)
+            self.select_db_button.setEnabled(True)
+            self.csv_label.setEnabled(False)
+            self.csv_edit.setEnabled(False)
+            self.select_csv_button.setEnabled(False)
+
+    def select_database(self):
+        options = QFileDialog.Options()
+        file_name, _ = QFileDialog.getOpenFileName(self, "Select Database File", "", "Database Files (*.db);;All Files (*)", options=options)
+        if file_name:
+            self.db_path_edit.setText(file_name)
+            self.accept()  # Automatically confirm selection
+
+    def select_csv(self):
+        options = QFileDialog.Options()
+        file_name, _ = QFileDialog.getOpenFileName(self, "Select CSV File", "", "CSV Files (*.csv);;All Files (*)", options=options)
+        if file_name:
+            self.csv_edit.setText(file_name)
+
+    def get_choice(self):
+        if self.create_db_radio.isChecked():
+            return 'create', self.db_name_edit.text(), self.csv_edit.text()
+        elif self.add_data_radio.isChecked():
+            return 'add', self.db_path_edit.text(), self.csv_edit.text()
+        elif self.use_db_radio.isChecked():
+            return 'use', self.db_path_edit.text(), None
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    main_app = RealEstateAnalysisApp()
+    main_app.show()
+    sys.exit(app.exec_())
